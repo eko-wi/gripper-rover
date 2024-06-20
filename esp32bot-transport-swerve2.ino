@@ -1,4 +1,6 @@
-/*
+/* 
+   ESP32 core v2.x (ledc dan mcpwm)
+   ESP32servo v2.x
    program untuk transporter robot
    board: ESP32BOT3
    output: motor 1 (kiri) 17-16, motor 2 (kanan) 13-12
@@ -66,6 +68,8 @@
 #define BLUETOOTHNAME "TOPScience-Transport3"
 //untuk mengaktifkan gerakan test motor di awal, uncomment baris berikut ini
 //#define TESTMOTORS
+//aktifkan define ini untuk hardware rover yang roda penggeraknya dua dan servo swerve cuma satu
+//#define SINGLESWERVE
 
 //gyro:
 //offset dicoba dengan example IMUzero
@@ -573,9 +577,13 @@ void loop() {
       putar(powerputar * faktorputar);
       //koreksi ini bisa mengubah sudut swerve kiri dan kanan
       //kalau arah hadap < target (kurang ke kanan), hasil PID calc negatif, tambahkan sudut swerve kanan, kurangi sudut swerve kiri
+#ifdef SINGLESWERVE
+       sdiff=0;
+#else
       sdiff = sign(x2data-128)*powerputar * (1. - faktorputar); //maksimal 10 derajat koreksi, tapi semakin dekat ke lurus depan (lihat dari x2data), perkecil koreksi
       if (sdiff > 20)sdiff = 20;
       else if (sdiff < -20) sdiff = -20;
+#endif
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
@@ -595,6 +603,7 @@ void loop() {
         powerputar=0;
         }
       */
+      sdiff=0;
       powerputar = xdata - 128;
       targetarah = 0;
       arahhadap = 0;

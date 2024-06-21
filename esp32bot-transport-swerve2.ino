@@ -1,5 +1,5 @@
-/* 
-   ESP32 core v2.x (ledc dan mcpwm)
+/*
+   ESP32 core v2.0.17 (ledc dan mcpwm)
    ESP32servo v2.x
    program untuk transporter robot
    board: ESP32BOT3
@@ -20,7 +20,7 @@
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "BluetoothSerial.h"
 #include<ESP32Servo.h>
-#include<driver\mcpwm.h>
+#include<driver/mcpwm.h>
 #include<EEPROM.h>
 #include"classes.cpp"
 //tombol:
@@ -53,8 +53,8 @@
 #define SKANAN_PIN 26
 #define SKIRIOFFSET (-2)
 #define SKANANOFFSET (-5)
-#define SGRIP_ANGLE_HOLD 180
-#define SGRIP_ANGLE_OPEN 20
+#define SGRIP_ANGLE_HOLD 140
+#define SGRIP_ANGLE_OPEN 0
 //kalau tidak ada perintah, langsung set servo grip ke 90 derajat (untuk servo 360)
 #define GRIP_AUTORETURN 0
 //eeprom:
@@ -65,11 +65,11 @@
 #define ADR_KD 18
 #define ADR_RF 24
 //bluetooth:
-#define BLUETOOTHNAME "TOPScience-Transport3"
+#define BLUETOOTHNAME "TOPScience-Transport4"
 //untuk mengaktifkan gerakan test motor di awal, uncomment baris berikut ini
 //#define TESTMOTORS
-//aktifkan define ini untuk hardware rover yang roda penggeraknya dua dan servo swerve cuma satu
-//#define SINGLESWERVE
+//untuk robot yang punya satu servo swerve:
+#define SINGLESWERVE
 
 //gyro:
 //offset dicoba dengan example IMUzero
@@ -88,7 +88,8 @@ struct savedvars {
   int gx, gy, gz, grx, gry, grz;
   byte magic;
 } vars, vars1;
-int gyrooffsets[6] = {93, -35, -16, 875, -152, 1519}; //robot 2
+//int gyrooffsets[6] = {93, -35, -16, 875, -152, 1519}; //robot 2
+int gyrooffsets[6] = {159, 20, 1, -2695, -1034, 1278}; //robot trirover-swerve
 MPU6050 mpu;
 Quaternion q;
 VectorFloat grav;
@@ -99,7 +100,7 @@ float arahhadap = 0, deltaarah = 0, targetarah = 0, targetarah1 = 0;
 mcpwm_config_t conf;
 Servo s_angkat, s_grip, skanan, skiri;
 BluetoothSerial btserial;
-uint8_t remoteaddress[]={0x98,0xd3,0x31,0xf6,0x42,0x61};
+uint8_t remoteaddress[] = {0x98, 0xd3, 0x31, 0xf6, 0x42, 0x61};
 int commandsource = 0; //0 = serial, 1 = btserial
 long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0;
 int motorenable = 0, adagyro = 0;
@@ -114,9 +115,10 @@ float boostfactor = 1;
 enum states {
   AWAL, SETKP, SETKI, SETKD, SETF, SAVEEE, READEE, XDATA, YDATA, X2DATA, SDATA, BDATA, PMAX, PLOW, PPUTAR
 } state;
-PIDController depan(250, 1.5, 25000, 100, 50); //set motor value dalam persen, maks 100
+PIDController depan(120, 1.5, 20000, 100, 50); //set motor value dalam persen, maks 100
 Smoothfilter putarsmooth(2);
-
+RateLimiter m1f(1,&t);
+RateLimiter m2f(1,&t);
 inline void ledon() {
   digitalWrite(2, HIGH);
 }
@@ -451,7 +453,7 @@ void setup() {
   EEPROM.begin(512);
   Wire.begin(21, 22, 400000);
   btserial.begin(BLUETOOTHNAME);
-  btserial.connect(remoteaddress,ESP_SPP_SEC_NONE);
+  //btserial.connect(remoteaddress, ESP_SPP_SEC_NONE);
   pinMode(2, OUTPUT);
   ledon();
   readsettingsfromeeprom();
@@ -578,11 +580,11 @@ void loop() {
       //koreksi ini bisa mengubah sudut swerve kiri dan kanan
       //kalau arah hadap < target (kurang ke kanan), hasil PID calc negatif, tambahkan sudut swerve kanan, kurangi sudut swerve kiri
 #ifdef SINGLESWERVE
-       sdiff=0;
-#else
-      sdiff = sign(x2data-128)*powerputar * (1. - faktorputar); //maksimal 10 derajat koreksi, tapi semakin dekat ke lurus depan (lihat dari x2data), perkecil koreksi
+      sdiff = sign(x2data - 128) * powerputar * (1. - faktorputar); //maksimal 10 derajat koreksi, tapi semakin dekat ke lurus depan (lihat dari x2data), perkecil koreksi
       if (sdiff > 20)sdiff = 20;
       else if (sdiff < -20) sdiff = -20;
+#else
+      sdiff = 0;
 #endif
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
@@ -603,7 +605,6 @@ void loop() {
         powerputar=0;
         }
       */
-      sdiff=0;
       powerputar = xdata - 128;
       targetarah = 0;
       arahhadap = 0;
@@ -631,8 +632,8 @@ void loop() {
   //update motor di setiap loop
   if (motorenable) {
     //putar positif ke kanan, power kiri tambahkan, power kanan kurangi
-    powerkiri = powermaju + deltamotor;
-    powerkanan = powermaju - deltamotor;
+    powerkiri = m1f.update(powermaju + deltamotor);
+    powerkanan = m2f.update(powermaju - deltamotor);
     if (powerkiri > 100) powerkiri = 100;
     else if (powerkiri < -100) powerkiri = -100;
     if (powerkanan > 100) powerkanan = 100;

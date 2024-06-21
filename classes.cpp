@@ -121,7 +121,7 @@ class RateLimiter {
       r = maxrate;
       timervar = Timervar;
       posisisekarang = 0;
-      updateinterval = 10;
+      updateinterval = 1;
     }
     void jumpto(int posisi) {
       posisisekarang = posisi;

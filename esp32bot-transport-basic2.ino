@@ -20,7 +20,7 @@
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "BluetoothSerial.h"
 #include<ESP32Servo.h>
-#include<driver\mcpwm.h>
+#include<driver/mcpwm.h>
 #include<EEPROM.h>
 #include"classes.cpp"
 //tombol:

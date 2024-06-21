@@ -102,10 +102,10 @@ class Smoothfilter {
       outval = ((outval * navg) + x) / (navg + 1.);
       return outval;
     }
-    float setvalue(float x) {
+    void setvalue(float x) {
       outval = x;
     }
-    float setnavg(int n) {
+    void setnavg(int n) {
       navg = n;
     }
 };

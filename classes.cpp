@@ -61,7 +61,7 @@ class PIDController {
       KD = x;
     }
     void setIreset(int mode) {
-      resetimode = mode;classes
+      resetimode = mode; //1 atau 0
     }
     void setTIreset(float t) {
       t_ = t;

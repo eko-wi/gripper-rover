@@ -440,9 +440,10 @@ void prosesdata(Stream &S) {
       depan.setKD(f);
       state = AWAL;
       break;
-    case SETF: //set rotate compensation factor
+    case SETF: //set rotate compensation factor atau parameter rahasia lainnya...
       f = S.parseFloat();
-      rotatecompensationfactor = f;
+      //rotatecompensationfactor = f;
+      boostfactor = f;
       state = AWAL;
       break;
     case PMAX: //set power max, power  slow, power putar
@@ -730,9 +731,9 @@ void loop() {
         if (arahhadap > 0) arahhadap -= 2 * M_PI;
       }
       float deltat = t - tlastcalc;
-      powerputar = depan.calc(arahhadap, targetarah1, deltat); //positif = putar kanan
+      powerputar = -depan.calc(arahhadap, targetarah1, deltat); //positif = putar kanan
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, output harus positif
-      putar(-powerputar);
+      putar(powerputar);
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
@@ -740,6 +741,7 @@ void loop() {
   else { //tidak ada gyro! apa yang harus diperbuat?
     float deltat = t - tlastcalc;
     if (deltat > 50) { //update 20 kali perdetik
+      /*
       if (targetarah > arahhadap) { //putarkanan
         powerputar = vars1.powerputar;
       }
@@ -749,10 +751,12 @@ void loop() {
       else {
         powerputar = 0;
       }
+    */
       targetarah = 0;
       arahhadap = 0;
+      powerputar = xdata-128;
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, output harus positif
-      putar(-powerputar);
+      putar(powerputar);
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
@@ -769,6 +773,7 @@ void loop() {
   }
   //cek data yang dikirim dari stick PS3
   if (BP32.update()) {
+    tlastcommand = t;
     processPScontrollers();
   }
   if (t - tlastcommand > 120) {

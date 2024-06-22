@@ -64,7 +64,7 @@
 #include "Wire.h"
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
-#include "BluetoothSerial.h"
+//#include "BluetoothSerial.h"
 #include <Bluepad32.h>
 #include<ESP32Servo.h>
 #include<driver\mcpwm.h>
@@ -146,7 +146,7 @@ uint8_t fifobuffer[64];
 float arahhadap = 0, deltaarah = 0, targetarah = 0, targetarah1 = 0, deltatargetarah = 0;
 mcpwm_config_t conf;
 Servo s_angkat, s_grip;
-BluetoothSerial btserial;
+//BluetoothSerial btserial;
 int commandsource = 0; //0 = serial, 1 = btserial
 long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0;
 int  motorenable = 0, adagyro = 0;
@@ -248,14 +248,20 @@ void stopmovement() {
 void noswerve() {
   deltatargetarah = 0;
 }
+void gripopen() {
+  s_grip.write(SGRIP_ANGLE_OPEN);
+}
+void griphold() {
+  s_grip.write(SGRIP_ANGLE_HOLD);
+}
 void prosesbstate() {
   //bit 5: grip hold
   //bit 6: grip open
   if (bdata & (1 << 5)) {
-    s_grip.write(SGRIP_ANGLE_HOLD);
+    griphold();
   }
   else if (bdata & (1 << 6)) {
-    s_grip.write(SGRIP_ANGLE_OPEN);
+    gripopen();
   }
   else {
     if (GRIP_AUTORETURN) s_grip.write(90);
@@ -475,16 +481,16 @@ void prosesdata(Stream &S) {
 #define DPAD_RIGHT 0x04
 #define DPAD_DOWN 0x02
 
-ControllerPtr PS[BP32_MAX_GAMEPADS];
+ControllerPtr PSsticks[BP32_MAX_GAMEPADS];
 int ncontroller = 0;
-bool PSconencted = false;
+bool PSconnected = false;
 void onPSconnect(ControllerPtr P) {
   PSconnected = true;
   Serial.println("Controller conected!");
   //tambahkan ke array
-  for (inti = 0; i < BP2_MAX_GAMEPADS; i++) {
-    if (PS[i] == NULL) {
-      PS[i] = P;
+  for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+    if (PSsticks[i] == NULL) {
+      PSsticks[i] = P;
       Serial.print("index ");
       Serial.println(i);
       break;
@@ -496,7 +502,7 @@ void onPSconnect(ControllerPtr P) {
 void onPSdisconnect(ControllerPtr P) {
   Serial.println("Controller disconnected");
   for (int i = 0; i < ncontroller; i++) {
-    if (PS[i] == P) {
+    if (PSsticks[i] == P) {
       Serial.print("index ");
       Serial.println(i);
       ncontroller--;
@@ -509,19 +515,19 @@ void onPSdisconnect(ControllerPtr P) {
   Serial.println("unknown");
 }
 bool PSbstate = false;
-bool PSgripbtnstate=false;
-bool PSgripstate=false;
+bool PSgripbtnstate = false;
+bool PSgripstate = false;
 void processPScontrollers() {
   for (int i = 0; i < ncontroller; i++) {
-    if (P[i]->isGamepad()) {
-      uint8_t dpadvalue = P[i]->dpad();
-      uint8_t buttons = P[i]->buttons();
-      int xaxisdata = P[i]->axisX; //joystick kiri
-      int yaxisdata = P[i]->axisY;
-      int x2axisdata = P[i]->axisRX; //kanan
-      int y2axisdata = P[i]->axisRY;
-      int brake = P[i].brake();
-      int throttle = P[i].throttle();
+    if (PSsticks[i]->isGamepad()) {
+      const uint8_t dpadvalue = PSsticks[i]->dpad();
+      const uint8_t buttons = PSsticks[i]->buttons();
+      const int xaxisdata = PSsticks[i]->axisX(); //joystick kiri
+      const int yaxisdata = PSsticks[i]->axisY();
+      const int x2axisdata = PSsticks[i]->axisRX(); //kanan
+      const int y2axisdata = PSsticks[i]->axisRY();
+      const int brake = PSsticks[i]->brake();
+      const int throttle = PSsticks[i]->throttle();
       if (abs(yaxisdata) > abs(y2axisdata)) {
         ydata = (yaxisdata + 512) / 4; //jadikan skala 128 dan berpusat di 128
       }
@@ -548,10 +554,10 @@ void processPScontrollers() {
           }
         }
         else {
-          xdata=128+vars1.powerputar;
+          xdata = 128 + vars1.powerputar;
         }
       }
-      else if(buttons&BUTTON_SQUARE){ //putar kiri
+      else if (buttons & BUTTON_SQUARE) { //putar kiri
         if (adagyro) { //putar kiri 90 derajat
           if (PSbstate == false) {
             PSbstate = true;
@@ -559,45 +565,45 @@ void processPScontrollers() {
           }
         }
         else {
-          xdata=128-vars1.powerputar;
+          xdata = 128 - vars1.powerputar;
         }
       }
-      else{
-        PSbstate=false;
-      }
-      
-      if(buttons&BUTTON_TRI){ //maju pelan
-        ydata=128+vars1.powerslow;
-      }
-      else if(buttons&BUTTON_X){ //mundur pelan
-        ydata=128-vars1.powerslow;
+      else {
+        PSbstate = false;
       }
 
-      if(dpad&DPAD_UP){
-        sdata=SANGKAT_HIGH;
+      if (buttons & BUTTON_TRI) { //maju pelan
+        ydata = 128 + vars1.powerslow;
       }
-      else if(dpad&DPAD_DOWN){
-        sdata=SANGKAT_LOW;
-      }
-      else if(dpad&(DPAD_LEFT|DPAD_MID)){
-        sdata=SANGKAT_MID;
+      else if (buttons & BUTTON_X) { //mundur pelan
+        ydata = 128 - vars1.powerslow;
       }
 
-      if(buttons&BUTTON_L1){ //grip toggle buka tutup
-        if(PSgripbtnstate==false){
-          PSgripbtnstate=true;
-          if(PSgripstate==false){
-            PSgripstate=true;
+      if (dpadvalue & DPAD_UP) {
+        sdata = SANGKAT_HIGH;
+      }
+      else if (dpadvalue & DPAD_DOWN) {
+        sdata = SANGKAT_LOW;
+      }
+      else if (dpadvalue & (DPAD_LEFT | DPAD_RIGHT)) {
+        sdata = SANGKAT_MID;
+      }
+
+      if (buttons & BUTTON_L1) { //grip toggle buka tutup
+        if (PSgripbtnstate == false) {
+          PSgripbtnstate = true;
+          if (PSgripstate == false) {
+            PSgripstate = true;
             griphold();
           }
-          else{
-            PSgripstate=false;
+          else {
+            PSgripstate = false;
             gripopen();
           }
         }
       }
-      else{
-        PSgripbtnstate=false;
+      else {
+        PSgripbtnstate = false;
       }
     }
   }
@@ -609,7 +615,7 @@ void setup() {
   Serial.begin(115200);
   EEPROM.begin(512);
   Wire.begin(21, 22, 400000);
-  btserial.begin(BLUETOOTHNAME);
+  //btserial.begin(BLUETOOTHNAME);
   pinMode(2, OUTPUT);
   ledon();
   readsettingsfromeeprom();
@@ -742,19 +748,19 @@ void loop() {
     float deltat = t - tlastcalc;
     if (deltat > 50) { //update 20 kali perdetik
       /*
-      if (targetarah > arahhadap) { //putarkanan
+        if (targetarah > arahhadap) { //putarkanan
         powerputar = vars1.powerputar;
-      }
-      else if (targetarah < arahhadap) {
+        }
+        else if (targetarah < arahhadap) {
         powerputar = -vars1.powerputar;
-      }
-      else {
+        }
+        else {
         powerputar = 0;
-      }
-    */
+        }
+      */
       targetarah = 0;
       arahhadap = 0;
-      powerputar = xdata-128;
+      powerputar = xdata - 128;
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, output harus positif
       putar(powerputar);
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
@@ -765,12 +771,12 @@ void loop() {
     tlastcommand = t;
     prosesdata(Serial);
   }
-  if (btserial.hasClient()) {
-    while (btserial.available()) {
-      tlastcommand = t;
-      prosesdata(btserial);
-    }
-  }
+  //  if (btserial.hasClient()) {
+  //    while (btserial.available()) {
+  //      tlastcommand = t;
+  //      prosesdata(btserial);
+  //    }
+  //  }
   //cek data yang dikirim dari stick PS3
   if (BP32.update()) {
     tlastcommand = t;

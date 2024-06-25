@@ -19,10 +19,10 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "BluetoothSerial.h"
-#include<ESP32Servo.h>
-#include<driver/mcpwm.h>
-#include<EEPROM.h>
-#include"classes.cpp"
+#include <ESP32Servo.h>
+#include <driver\mcpwm.h>
+#include <EEPROM.h>
+#include "classes.cpp"
 //tombol:
 #define T1 14
 #define T2 15
@@ -49,8 +49,11 @@
 //servo:
 #define S_ANGKAT_PIN 23
 #define S_GRIP_PIN 25
-#define SGRIP_ANGLE_HOLD 90
-#define SGRIP_ANGLE_OPEN 180
+#define SGRIP_HOLD 90
+#define SGRIP_OPEN 0
+#define SANGKAT_UP 180
+#define SANGKAT_DOWN 0
+#define SANGKAT_MID 60
 //kalau tidak ada perintah, langsung set servo grip ke 90 derajat (untuk servo 360)
 #define GRIP_AUTORETURN 0
 //gerakan ujung ke ujung dalam 500 ms
@@ -67,7 +70,7 @@
 #define BLUETOOTHNAME "TOPScience-Transport3"
 //untuk mengaktifkan gerakan test motor di awal, uncomment baris berikut ini
 //#define TESTMOTORS
-
+#define TESTSERVO
 //gyro:
 //offset dicoba dengan example IMUzero
 /*
@@ -85,21 +88,21 @@ struct savedvars {
   int gx, gy, gz, grx, gry, grz;
   byte magic;
 } vars, vars1;
-int gyrooffsets[6] = {180, 74, 277, 399, -563, 1036}; //robot wificar adventure
+int gyrooffsets[6] = { 180, 74, 277, 399, -563, 1036 };  //robot hitam merah
 MPU6050 mpu;
 Quaternion q;
 VectorFloat grav;
 uint8_t packetsize, fifocount;
-float ypr[3]; //yaw pitch roll
+float ypr[3];  //yaw pitch roll
 uint8_t fifobuffer[64];
 float arahhadap = 0, deltaarah = 0, targetarah = 0, targetarah1 = 0, deltatargetarah = 0;
 mcpwm_config_t conf;
 Servo s_angkat, s_grip;
 BluetoothSerial btserial;
-int commandsource = 0; //0 = serial, 1 = btserial
+int commandsource = 0;  //0 = serial, 1 = btserial
 long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0;
-int  motorenable = 0, adagyro = 0;
-int xdata = 0, ydata = 0, sdata = 90,x2data=0, bdata = 0;
+int motorenable = 0, adagyro = 0;
+int xdata = 0, ydata = 0, sdata = 90, x2data = 0, bdata = 0;
 float rotatecompensationfactor = 0;
 float rotatecompensation = 0;
 float powermaju = 0, powerputar = 0, deltamotor = 0;
@@ -107,12 +110,26 @@ float powerkiri = 0, powerkanan = 0;
 float lastpower = 0;
 float boostfactor = 1;
 enum states {
-  AWAL, SETKP, SETKI, SETKD, SETF, SAVEEE, READEE, XDATA, YDATA, X2DATA, SDATA, BDATA, PMAX, PLOW, PPUTAR
+  AWAL,
+  SETKP,
+  SETKI,
+  SETKD,
+  SETF,
+  SAVEEE,
+  READEE,
+  XDATA,
+  YDATA,
+  X2DATA,
+  SDATA,
+  BDATA,
+  PMAX,
+  PLOW,
+  PPUTAR
 } state;
 
-PIDController depan(120, 1.5, 15000, 80, 50); //set motor value dalam persen, maks 100
+PIDController depan(70, 1.5, 15000, 80, 50);  //set motor value dalam persen, maks 100
 Smoothfilter putarsmooth(2);
-RateLimiter armpos(SERVORATE,&t);
+RateLimiter armpos(SERVORATE, &t);
 inline void ledon() {
   digitalWrite(2, HIGH);
 }
@@ -125,8 +142,7 @@ void updatemotor() {
   if (powerkiri >= 0) {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B, powerkiri);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 0);
-  }
-  else {
+  } else {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, -powerkiri);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B, 0);
   }
@@ -134,15 +150,14 @@ void updatemotor() {
   if (powerkanan >= 0) {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_B, powerkanan);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A, 0);
-  }
-  else {
+  } else {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A, -powerkanan);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_B, 0);
   }
 }
 
 
-inline void putar(int power) { //skala -100 sampai +100
+inline void putar(int power) {  //skala -100 sampai +100
   deltamotor = power;
 }
 
@@ -159,13 +174,12 @@ void putardelta(float delta) {
   targetarah = targetarah + delta;
   if (targetarah >= M_PI) {
     targetarah -= (2 * M_PI);
-  }
-  else if (targetarah <= -M_PI) {
+  } else if (targetarah <= -M_PI) {
     targetarah += (2 * M_PI);
   }
 }
 int sign(int a) {
-  if (a > 0) return 1;
+  if (a >= 0) return 1;
   else return -1;
 }
 void prosesoutput() {
@@ -174,39 +188,56 @@ void prosesoutput() {
   //dari ydata jadi maju mundur
   int yy = ydata - 128;
   int xx2 = x2data - 128;
-  float x2 = (float)(xx2) * 0.78125;
-  float y = (float)(yy) * 0.78125; //dari skala 128 jadi skala 100
+  float x2 = (float)(xx2)*0.78125;
+  float y = (float)(yy)*0.78125;  //dari skala 128 jadi skala 100
   float z = max(fabs(y), fabs(x2)) * sign(yy);
   maju(z);
   //kalau maju, body akan terputar ke kiri, jadi tambahkan sedikit power putar ke kanan
   //rotatecompensation = y * rotatecompensationfactor;
   //dari xdata jadi sudut putar
-  deltaarah = (float)(xdata - 128) * 2.34375e-5 * deltat; //128 = 3 rad/s
-  deltatargetarah = (float)(xx2) * 0.0122718 * sign(yy); // pi/2 rad untuk 128
+  deltaarah = (float)(xdata - 128) * 2.34375e-5 * deltat;  //128 = 3 rad/s
+  deltatargetarah = (float)(xx2)*0.0122718 * sign(yy);     // pi/2 rad untuk 128
   putardelta(deltaarah);
 }
 void stopmovement() {
+  //Serial.println("enter stopmovement");
   powerkiri = 0;
   powerkanan = 0;
   powermaju = 0;
+  //Serial.println("updatemotor");
   updatemotor();
+  //Serial.println("resetting PID");
   depan.reset();
   targetarah = arahhadap;
-  putarsmooth.setvalue(0);
+  //Serial.println("end stopmovement");
+  //putarsmooth.setvalue(0);
 }
-void noswerve(){
-  deltatargetarah=0;
+void noswerve() {
+  deltatargetarah = 0;
+}
+void armup() {
+  s_angkat.write(SANGKAT_UP);
+}
+void armdown() {
+  s_angkat.write(SANGKAT_DOWN);
+}
+void armmid() {
+  s_angkat.write(SANGKAT_MID);
+}
+void griphold() {
+  s_grip.write(SGRIP_HOLD);
+}
+void gripopen() {
+  s_grip.write(SGRIP_OPEN);
 }
 void prosesbstate() {
   //bit 5: grip hold
   //bit 6: grip open
   if (bdata & (1 << 5)) {
-    s_grip.write(SGRIP_ANGLE_HOLD);
-  }
-  else if (bdata & (1 << 6)) {
-    s_grip.write(SGRIP_ANGLE_OPEN);
-  }
-  else {
+    griphold();
+  } else if (bdata & (1 << 6)) {
+    gripopen();
+  } else {
     if (GRIP_AUTORETURN) s_grip.write(90);
   }
 }
@@ -214,22 +245,28 @@ int readsettingsfromeeprom() {
   if (EEPROM.read(0) == MAGIC) {
     EEPROM.get(ADR_DATA, vars1);
     if (vars1.magic == MAGIC) {
-      Serial.print("saved kp:"); Serial.print(vars1.kp);
-      Serial.print(" ki:"); Serial.print(vars1.ki);
-      Serial.print(" kd:"); Serial.print(vars1.kd);
-      Serial.print(" b:"); Serial.print(vars1.bo);
+      Serial.print("saved kp:");
+      Serial.print(vars1.kp);
+      Serial.print(" ki:");
+      Serial.print(vars1.ki);
+      Serial.print(" kd:");
+      Serial.print(vars1.kd);
+      Serial.print(" b:");
+      Serial.print(vars1.bo);
       Serial.println();
-      Serial.print("powermax:"); Serial.print(vars1.powermax);
-      Serial.print(" slow:"); Serial.print(vars1.powerslow);
-      Serial.print(" putar:"); Serial.print(vars1.powerputar);
+      Serial.print("powermax:");
+      Serial.print(vars1.powermax);
+      Serial.print(" slow:");
+      Serial.print(vars1.powerslow);
+      Serial.print(" putar:");
+      Serial.print(vars1.powerputar);
       Serial.println();
       depan.setKP(vars1.kp);
       depan.setKI(vars1.ki);
       depan.setKD(vars1.kd);
       boostfactor = vars1.bo;
       return 1;
-    }
-    else {
+    } else {
       Serial.println("Tidak ada data tersimpan.");
     }
   }
@@ -253,30 +290,24 @@ void prosesdata(Stream &S) {
   char c;
   int j;
   switch (state) {
-    case AWAL: //terima magic byte awal
+    case AWAL:  //terima magic byte awal
       c = S.read();
       Serial.println(c);
       if (c == MAGIC) {
         state = XDATA;
         ledcWrite(PWMC1, 0);
-      }
-      else if (c == 'p') { //set kp
+      } else if (c == 'p') {  //set kp
         state = SETKP;
-      }
-      else if (c == 'i') {
+      } else if (c == 'i') {
         state = SETKI;
-      }
-      else if (c == 'd') {
+      } else if (c == 'd') {
         state = SETKD;
-      }
-      else if (c == 'f') {
+      } else if (c == 'f') {
         state = SETF;
-      }
-      else if (c == 's') { //save kp ki kd ke eeprom
+      } else if (c == 's') {  //save kp ki kd ke eeprom
         savesettingstoeeprom();
         Serial.println("pid constants saved.");
-      }
-      else if (c == 'r') { //baca kp ki kd dll
+      } else if (c == 'r') {  //baca kp ki kd dll
         S.print(depan.getKP());
         S.print(',');
         S.print(depan.getKI());
@@ -285,51 +316,40 @@ void prosesdata(Stream &S) {
         S.print(',');
         S.print(boostfactor);
         S.println();
-      }
-      else if (c == 'P') { //power max, power slow, power putar
+      } else if (c == 'P') {  //power max, power slow, power putar
         state = PMAX;
-      }
-      else if (c == 'R') { //putar kanan 90
+      } else if (c == 'R') {  //putar kanan 90
         putardelta(M_PI_2);
         noswerve();
-      }
-      else if (c == 'L') { //putar kiri 90
+      } else if (c == 'L') {  //putar kiri 90
         putardelta(-M_PI_2);
         noswerve();
-      }
-      else if (c == '0') {
+      } else if (c == '0') {
         motorenable = 0;
         stopmovement();
         ledoff();
-      }
-      else if (c == '1') {
+      } else if (c == '1') {
         motorenable = 1;
         ledon();
-      }
-      else if (c == 'W') { //perintah WSAD
+      } else if (c == 'W') {  //perintah WSAD
         maju(vars1.powermax);
         putar(0);
         noswerve();
-      }
-      else if (c == 'w') { //maju pelan
+      } else if (c == 'w') {  //maju pelan
         maju(vars1.powerslow);
         putar(0);
         noswerve();
-      }
-      else if (c == 'S') { //mundur pelan
+      } else if (c == 'S') {  //mundur pelan
         maju(-vars1.powerslow);
         putar(0);
-      }
-      else if (c == 'X') { //mundur full power
+      } else if (c == 'X') {  //mundur full power
         maju(-vars1.powermax);
         putar(0);
-      }
-      else if (c == 'A') { //putar kiri
+      } else if (c == 'A') {  //putar kiri
         maju(0);
         putar(-vars1.powerputar);
         noswerve();
-      }
-      else if (c == 'D') { //putar kanan
+      } else if (c == 'D') {  //putar kanan
         maju(0);
         putar(vars1.powerputar);
         noswerve();
@@ -371,30 +391,30 @@ void prosesdata(Stream &S) {
       //proses bstate
       prosesbstate();
       //gerakkan arm
-      
+
       s_angkat.write(armpos.update(sdata));
       break;
-    case SETKP: //set KP
+    case SETKP:  //set KP
       f = S.parseFloat();
       depan.setKP(f);
       state = AWAL;
       break;
-    case SETKI: //set KI
+    case SETKI:  //set KI
       f = S.parseFloat();
       depan.setKI(f);
       state = AWAL;
       break;
-    case SETKD: //set KD
+    case SETKD:  //set KD
       f = S.parseFloat();
       depan.setKD(f);
       state = AWAL;
       break;
-    case SETF: //set rotate compensation factor
+    case SETF:  //set rotate compensation factor
       f = S.parseFloat();
       rotatecompensationfactor = f;
       state = AWAL;
       break;
-    case PMAX: //set power max, power  slow, power putar
+    case PMAX:  //set power max, power  slow, power putar
       j = S.read();
       if (j > 0 && j < 100) vars1.powermax = j;
       state = PLOW;
@@ -408,7 +428,7 @@ void prosesdata(Stream &S) {
       j = S.read();
       if (j > 0 && j < 100) vars1.powerputar = j;
       state = AWAL;
-  } //tutup switch(state)
+  }  //tutup switch(state)
 }
 //===============awal program==================
 
@@ -423,9 +443,9 @@ void setup() {
   readsettingsfromeeprom();
   s_angkat.attach(S_ANGKAT_PIN);
   s_grip.attach(S_GRIP_PIN);
-  s_angkat.write(0);
-  s_grip.write(SGRIP_ANGLE_OPEN);
-  armpos.jumpto(0);
+  armdown();
+  griphold();
+  armpos.jumpto(SANGKAT_DOWN);
   ledcSetup(PWMC1, 1000, 8);
   ledcSetup(PWMC2, 1000, 8);
   ledcSetup(PWMC3, 1000, 8);
@@ -456,8 +476,7 @@ void setup() {
   if (mpu.testConnection()) {
     Serial.println("MPU6050 koneksi OK");
     //tone(12, 500); delay(100); noTone(12); delay(400);
-  }
-  else {
+  } else {
     Serial.println("MPU connection failed");
     ledcWrite(PWMC1, 255);
     ledcWrite(PWMC2, 255);
@@ -476,14 +495,14 @@ void setup() {
     packetsize = mpu.dmpGetFIFOPacketSize();
     adagyro = 1;
   }
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, M1A); //hubungkan unit PWM 0, fungsi yang mana, ke pin mana
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, M1B); //kiri
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, M1A);  //hubungkan unit PWM 0, fungsi yang mana, ke pin mana
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, M1B);  //kiri
   mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1A, M2A);
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1B, M2B); //kanan
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1B, M2B);  //kanan
   conf.frequency = 1000;
   conf.cmpr_a = 0;
   conf.cmpr_b = 0;
-  conf.duty_mode = MCPWM_DUTY_MODE_0; //active high
+  conf.duty_mode = MCPWM_DUTY_MODE_0;  //active high
   conf.counter_mode = MCPWM_UP_COUNTER;
   mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &conf);
   mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_1, &conf);
@@ -496,12 +515,28 @@ void setup() {
 
 #ifdef TESTMOTORS
   Serial.println("Testing motors...");
-  powerkiri = 80; powerkanan = 80;  updatemotor();
+  powerkiri = 80;
+  powerkanan = 80;
+  updatemotor();
   delay(100);
-  powerkiri = -80; powerkanan = -80;  updatemotor();
+  powerkiri = -80;
+  powerkanan = -80;
+  updatemotor();
   delay(100);
-  powerkiri = 0; powerkanan = 0;  updatemotor();
+  powerkiri = 0;
+  powerkanan = 0;
+  updatemotor();
   delay(100);
+#endif
+#ifdef TESTSERVO
+  armup();
+  delay(200);
+  armdown();
+  delay(200);
+  gripopen();
+  delay(200);
+  griphold();
+  delay(200);
 #endif
   vars1.powermax = 100;
   vars1.powerslow = 24;
@@ -512,46 +547,45 @@ void setup() {
 
 void loop() {
   t = millis();
+  //Serial.print("loop");
+  //Serial.println(t);
   if (adagyro) {
+    //Serial.println("adagyro");
     if (mpu.dmpGetCurrentFIFOPacket(fifobuffer)) {
       mpu.dmpGetQuaternion(&q, fifobuffer);
       mpu.dmpGetGravity(&grav, &q);
       mpu.dmpGetYawPitchRoll(ypr, &q, &grav);
-      arahhadap = ypr[0]; //dalam radian
+      arahhadap = ypr[0];  //dalam radian
       //Serial.println(arahhadap);
       //kalau dekat batas +- pi:
-      targetarah1 = targetarah + deltatargetarah; //delta ini untuk mensimulasikan gerak swerve
+      targetarah1 = targetarah + deltatargetarah;  //delta ini untuk mensimulasikan gerak swerve
       if (targetarah1 >= M_PI) {
         targetarah1 -= (2 * M_PI);
-      }
-      else if (targetarah1 <= -M_PI) {
+      } else if (targetarah1 <= -M_PI) {
         targetarah1 += (2 * M_PI);
       }
-      
+
       if (targetarah1 > M_PI_2) {
         if (arahhadap < 0) arahhadap += 2 * M_PI;
-      }
-      else if (targetarah1 < -M_PI_2) {
+      } else if (targetarah1 < -M_PI_2) {
         if (arahhadap > 0) arahhadap -= 2 * M_PI;
       }
       float deltat = t - tlastcalc;
-      powerputar = depan.calc(arahhadap, targetarah1, deltat); //positif = putar kanan
+      powerputar = depan.calc(arahhadap, targetarah1, deltat);  //positif = putar kanan
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, output harus positif
       putar(-powerputar);
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
-  }
-  else { //tidak ada gyro! apa yang harus diperbuat?
+  } else {  //tidak ada gyro! apa yang harus diperbuat?
+  //Serial.println("nogyro");
     float deltat = t - tlastcalc;
-    if (deltat > 50) { //update 20 kali perdetik
-      if (targetarah > arahhadap) { //putarkanan
+    if (deltat > 50) {               //update 20 kali perdetik
+      if (targetarah > arahhadap) {  //putarkanan
         powerputar = vars1.powerputar;
-      }
-      else if (targetarah < arahhadap) {
+      } else if (targetarah < arahhadap) {
         powerputar = -vars1.powerputar;
-      }
-      else {
+      } else {
         powerputar = 0;
       }
       targetarah = 0;
@@ -567,6 +601,7 @@ void loop() {
     prosesdata(Serial);
   }
   if (btserial.hasClient()) {
+    //Serial.println("bt hasclient");
     while (btserial.available()) {
       tlastcommand = t;
       prosesdata(btserial);
@@ -574,10 +609,13 @@ void loop() {
   }
 
   if (t - tlastcommand > 120) {
+    //Serial.println("stopmovement");
     stopmovement();
   }
   //update motor di setiap loop
+  //Serial.println("motorenable?");
   if (motorenable) {
+    //Serial.println("motorenable");
     //putar positif ke kanan, power kiri tambahkan, power kanan kurangi
     powerkiri = powermaju + deltamotor;
     powerkanan = powermaju - deltamotor;
@@ -588,4 +626,5 @@ void loop() {
     updatemotor();
     s_angkat.write(armpos.update(sdata));
   }
+  //Serial.println("end loop");
 }

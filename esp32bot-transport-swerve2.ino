@@ -52,21 +52,22 @@
 #define SKIRIOFFSET (0)
 #define SKANANOFFSET (0)
 //robot ungu
-#define SGRIP_HOLD 0
-#define SGRIP_OPEN 180
-#define SANGKAT_UP 40
-#define SANGKAT_DOWN 180
-#define SANGKAT_MID 90
+// #define SGRIP_HOLD 0
+// #define SGRIP_OPEN 180
+// #define SANGKAT_UP 40
+// #define SANGKAT_DOWN 180
+// #define SANGKAT_MID 90
 //robot merah hitam
-//#define SGRIP_HOLD 90
-//#define SGRIP_OPEN 0
-//#define SANGKAT_UP 0
-//#define SANGKAT_DOWN 180
-//#define SANGKAT_MID 90
+#define SGRIP_HOLD 90
+#define SGRIP_OPEN 0
+#define SANGKAT_UP 180
+#define SANGKAT_DOWN 0
+#define SANGKAT_MID 60
+//kalau servo pemutar swerve terbalik posisinya 0-180
+#define INVERT_SWERVE
+
 //kalau tidak ada perintah, langsung set servo grip ke 90 derajat (untuk servo 360)
 #define GRIP_AUTORETURN 0
-//kalau servo pemutar swerve terbalik posisinya 0-180
-//#define INVERT_SWERVE
 //eeprom:
 #define MAGIC 0xbd
 #define ADR_DATA 0x02
@@ -98,9 +99,9 @@ struct savedvars {
   byte magic;
 } vars, vars1;
 //.................... [-1289,-1288] --> [-4,13]  [-4403,-4402] --> [-9,6]  [833,834] --> [16380,16397] [156,157] --> [-1,2]  [-25,-25] --> [0,3] [26,27] --> [-1,2]
-//int gyrooffsets[6] = {156, -25, 26, -1290, -4373, 833}; //robot superswerve2
+int gyrooffsets[6] = {156, -25, 26, -1290, -4373, 833}; //robot superswerve2
 //                      [880,881] --> [-2,4]	[-143,-142] --> [-4,14]	[1427,1429] --> [16382,16410]	[139,140] --> [-2,2]	[-44,-43] --> [0,1]	[-8,-7] --> [0,5]
-int gyrooffsets[6] = { 139, -44, -8, 880, -143, 1427 };  //robot superswerve1
+//int gyrooffsets[6] = { 139, -44, -8, 880, -143, 1427 };  //robot superswerve1
 
 MPU6050 mpu;
 Quaternion q;
@@ -114,10 +115,10 @@ Servo s_angkat, s_grip, skanan, skiri;
 BluetoothSerial btserial;
 uint8_t remoteaddress[] = { 0x98, 0xd3, 0x31, 0xf6, 0x42, 0x61 };
 int commandsource = 0;  //0 = serial, 1 = btserial
-long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0;
+long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0, tservomove = 0, tmotordisable = 0;
 int motorenable = 0, adagyro = 0;
 int xdata = 0, ydata = 0, x2data = 0, sdata = 90, bdata = 0;
-int skiriangle, skananangle, sdiff;
+int skiriangle, skananangle, sdiff, lastswerve = 90;
 float rotatecompensationfactor = 0;
 float rotatecompensation = 0;
 float powermaju = 0, powerputar = 0, deltamotor = 0;
@@ -181,6 +182,12 @@ inline void putar(int power) {  //skala -100 sampai +100
 
 void swerve(int a) {
   swerveangle = a;
+  int deltaswerve = abs(swerveangle - lastswerve);
+  if (deltaswerve > 30) {
+    //0.6 detik untuk 180 derajat = 300 derajat perdetik = 3.3 ms per derajat
+    tservomove = deltaswerve * 4/3;
+    tmotordisable = t;
+  }
 #ifdef INVERT_SWERVE
   skiriangle = 180 - (a - sdiff);
   skananangle = 180 - (a + sdiff);
@@ -188,6 +195,7 @@ void swerve(int a) {
   skiriangle = a - sdiff;
   skananangle = a + sdiff;
 #endif
+  lastswerve = swerveangle;
 }
 void noswerve() {
   swerveangle = 90;
@@ -259,13 +267,13 @@ void stopmovement() {
   //putarsmooth.setvalue(0);
   noswerve();
 }
-void armup(){
+void armup() {
   s_angkat.write(SANGKAT_UP);
 }
-void armdown(){
+void armdown() {
   s_angkat.write(SANGKAT_DOWN);
 }
-void armmid(){
+void armmid() {
   s_angkat.write(SANGKAT_MID);
 }
 void griphold() {
@@ -680,10 +688,19 @@ void loop() {
     else if (powerkiri < -100) powerkiri = -100;
     if (powerkanan > 100) powerkanan = 100;
     else if (powerkanan < -100) powerkanan = -100;
-    updatemotor();
     if (powermaju) {
       calcswerve();
     }
+    if (tservomove > 0) {
+      powerkiri = 0;
+      powerkanan = 0;
+      m1limiter.jumpto(0);
+      m2limiter.jumpto(0);
+      if (t - tmotordisable > tservomove) {
+        tservomove = 0;
+      }
+    }
+    updatemotor();
     int skanananglewrite = skananangle + SKANANOFFSET;
     int skirianglewrite = skiriangle + SKIRIOFFSET;
     skanananglewrite = constrain(skanananglewrite, 0, 180);

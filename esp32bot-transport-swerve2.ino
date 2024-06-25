@@ -1,6 +1,4 @@
 /*
-   ESP32 core v2.0.17 (ledc dan mcpwm)
-   ESP32servo v2.x
    program untuk transporter robot
    board: ESP32BOT3
    output: motor 1 (kiri) 17-16, motor 2 (kanan) 13-12
@@ -19,10 +17,10 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include "BluetoothSerial.h"
-#include<ESP32Servo.h>
-#include<driver/mcpwm.h>
-#include<EEPROM.h>
-#include"classes.cpp"
+#include <ESP32Servo.h>
+#include <driver\mcpwm.h>
+#include <EEPROM.h>
+#include "classes.cpp"
 //tombol:
 #define T1 14
 #define T2 15
@@ -51,12 +49,24 @@
 #define S_GRIP_PIN 25
 #define SKIRI_PIN 27
 #define SKANAN_PIN 26
-#define SKIRIOFFSET (-2)
-#define SKANANOFFSET (-5)
-#define SGRIP_ANGLE_HOLD 140
-#define SGRIP_ANGLE_OPEN 0
+#define SKIRIOFFSET (0)
+#define SKANANOFFSET (0)
+//robot ungu
+#define SGRIP_HOLD 0
+#define SGRIP_OPEN 180
+#define SANGKAT_UP 40
+#define SANGKAT_DOWN 180
+#define SANGKAT_MID 90
+//robot merah hitam
+//#define SGRIP_HOLD 90
+//#define SGRIP_OPEN 0
+//#define SANGKAT_UP 0
+//#define SANGKAT_DOWN 180
+//#define SANGKAT_MID 90
 //kalau tidak ada perintah, langsung set servo grip ke 90 derajat (untuk servo 360)
 #define GRIP_AUTORETURN 0
+//kalau servo pemutar swerve terbalik posisinya 0-180
+//#define INVERT_SWERVE
 //eeprom:
 #define MAGIC 0xbd
 #define ADR_DATA 0x02
@@ -65,11 +75,10 @@
 #define ADR_KD 18
 #define ADR_RF 24
 //bluetooth:
-#define BLUETOOTHNAME "TOPScience-Transport4"
+#define BLUETOOTHNAME "TOPScience-SuperSwerve1"
 //untuk mengaktifkan gerakan test motor di awal, uncomment baris berikut ini
 //#define TESTMOTORS
-//untuk robot yang punya satu servo swerve:
-#define SINGLESWERVE
+#define TESTSERVO
 
 //gyro:
 //offset dicoba dengan example IMUzero
@@ -88,20 +97,23 @@ struct savedvars {
   int gx, gy, gz, grx, gry, grz;
   byte magic;
 } vars, vars1;
-//int gyrooffsets[6] = {93, -35, -16, 875, -152, 1519}; //robot 2
-int gyrooffsets[6] = {159, 20, 1, -2695, -1034, 1278}; //robot trirover-swerve
+//.................... [-1289,-1288] --> [-4,13]  [-4403,-4402] --> [-9,6]  [833,834] --> [16380,16397] [156,157] --> [-1,2]  [-25,-25] --> [0,3] [26,27] --> [-1,2]
+//int gyrooffsets[6] = {156, -25, 26, -1290, -4373, 833}; //robot superswerve2
+//                      [880,881] --> [-2,4]	[-143,-142] --> [-4,14]	[1427,1429] --> [16382,16410]	[139,140] --> [-2,2]	[-44,-43] --> [0,1]	[-8,-7] --> [0,5]
+int gyrooffsets[6] = { 139, -44, -8, 880, -143, 1427 };  //robot superswerve1
+
 MPU6050 mpu;
 Quaternion q;
 VectorFloat grav;
 uint8_t packetsize, fifocount;
-float ypr[3]; //yaw pitch roll
+float ypr[3];  //yaw pitch roll
 uint8_t fifobuffer[64];
 float arahhadap = 0, deltaarah = 0, targetarah = 0, targetarah1 = 0;
 mcpwm_config_t conf;
 Servo s_angkat, s_grip, skanan, skiri;
 BluetoothSerial btserial;
-uint8_t remoteaddress[] = {0x98, 0xd3, 0x31, 0xf6, 0x42, 0x61};
-int commandsource = 0; //0 = serial, 1 = btserial
+uint8_t remoteaddress[] = { 0x98, 0xd3, 0x31, 0xf6, 0x42, 0x61 };
+int commandsource = 0;  //0 = serial, 1 = btserial
 long t = 0, tlastcommand = 0, tlastproses = 0, tlastcalc = 0;
 int motorenable = 0, adagyro = 0;
 int xdata = 0, ydata = 0, x2data = 0, sdata = 90, bdata = 0;
@@ -113,12 +125,26 @@ float powerkiri = 0, powerkanan = 0, swerveangle = 90;
 float lastpower = 0;
 float boostfactor = 1;
 enum states {
-  AWAL, SETKP, SETKI, SETKD, SETF, SAVEEE, READEE, XDATA, YDATA, X2DATA, SDATA, BDATA, PMAX, PLOW, PPUTAR
+  AWAL,
+  SETKP,
+  SETKI,
+  SETKD,
+  SETF,
+  SAVEEE,
+  READEE,
+  XDATA,
+  YDATA,
+  X2DATA,
+  SDATA,
+  BDATA,
+  PMAX,
+  PLOW,
+  PPUTAR
 } state;
-PIDController depan(120, 1.5, 20000, 100, 50); //set motor value dalam persen, maks 100
-Smoothfilter putarsmooth(2);
-RateLimiter m1f(1,&t);
-RateLimiter m2f(1,&t);
+PIDController depan(250, 1.5, 25000, 100, 50);  //set motor value dalam persen, maks 100
+//Smoothfilter putarsmooth(2);
+RateLimiter m1limiter(1, &t);  //1 poin per milisekon
+RateLimiter m2limiter(1, &t);
 inline void ledon() {
   digitalWrite(2, HIGH);
 }
@@ -131,8 +157,7 @@ void updatemotor() {
   if (powerkiri >= 0) {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B, powerkiri);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 0);
-  }
-  else {
+  } else {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, -powerkiri);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B, 0);
   }
@@ -140,15 +165,14 @@ void updatemotor() {
   if (powerkanan >= 0) {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_B, powerkanan);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A, 0);
-  }
-  else {
+  } else {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A, -powerkanan);
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_B, 0);
   }
 }
 
 
-inline void putar(int power) { //skala -100 sampai +100
+inline void putar(int power) {  //skala -100 sampai +100
   //tambah power motor kiri, kurangi motor kanan, tapi hanya ketika tidak sedang swerve (lihat x2data)
   deltamotor = power * (128 - abs(x2data - 128)) / 128;
   //putar positif ke kanan, power kiri tambahkan, power kanan kurangi
@@ -157,8 +181,13 @@ inline void putar(int power) { //skala -100 sampai +100
 
 void swerve(int a) {
   swerveangle = a;
+#ifdef INVERT_SWERVE
+  skiriangle = 180 - (a - sdiff);
+  skananangle = 180 - (a + sdiff);
+#else
   skiriangle = a - sdiff;
   skananangle = a + sdiff;
+#endif
 }
 void noswerve() {
   swerveangle = 90;
@@ -179,8 +208,7 @@ void putardelta(float delta) {
   targetarah = targetarah + delta;
   if (targetarah >= M_PI) {
     targetarah -= (2 * M_PI);
-  }
-  else if (targetarah <= -M_PI) {
+  } else if (targetarah <= -M_PI) {
     targetarah += (2 * M_PI);
   }
 }
@@ -195,8 +223,7 @@ void calcswerve() {
   int xx = x2data - 128;
   if (xx == 0) {
     swerve(90);
-  }
-  else {
+  } else {
     float a = atan2(yy, -xx) * 180. / M_PI;
     if (a < 0) {
       a = 180 + a;
@@ -210,14 +237,14 @@ void prosesoutput() {
   //dari ydata jadi maju mundur
   int yy = ydata - 128;
   int xx = x2data - 128;
-  float x2 = (float)(xx) * 0.78125;
-  float y = (float)(yy) * 0.78125; //dari skala 128 jadi skala 100
+  float x2 = (float)(xx)*0.78125;
+  float y = (float)(yy)*0.78125;  //dari skala 128 jadi skala 100
   float z = max(fabs(y), fabs(x2)) * sign(yy);
   maju(z);
   //kalau maju, body akan terputar ke kiri, jadi tambahkan sedikit power putar ke kanan
   //rotatecompensation = y * rotatecompensationfactor;
   //dari xdata jadi sudut putar
-  deltaarah = (float)(xdata - 128) * 2.34375e-5 * deltat; //128 = 3 rad/s
+  deltaarah = (float)(xdata - 128) * 2.34375e-5 * deltat;  //128 = 3 rad/s
   putardelta(deltaarah);
 }
 void stopmovement() {
@@ -227,20 +254,34 @@ void stopmovement() {
   updatemotor();
   depan.reset();
   targetarah = arahhadap;
-  putarsmooth.setvalue(0);
+  m1limiter.jumpto(0);
+  m2limiter.jumpto(0);
+  //putarsmooth.setvalue(0);
   noswerve();
 }
-
+void armup(){
+  s_angkat.write(SANGKAT_UP);
+}
+void armdown(){
+  s_angkat.write(SANGKAT_DOWN);
+}
+void armmid(){
+  s_angkat.write(SANGKAT_MID);
+}
+void griphold() {
+  s_grip.write(SGRIP_HOLD);
+}
+void gripopen() {
+  s_grip.write(SGRIP_OPEN);
+}
 void prosesbstate() {
   //bit 5: grip hold
   //bit 6: grip open
   if (bdata & (1 << 5)) {
-    s_grip.write(SGRIP_ANGLE_HOLD);
-  }
-  else if (bdata & (1 << 6)) {
-    s_grip.write(SGRIP_ANGLE_OPEN);
-  }
-  else {
+    griphold();
+  } else if (bdata & (1 << 6)) {
+    gripopen();
+  } else {
     if (GRIP_AUTORETURN) s_grip.write(90);
   }
 }
@@ -248,22 +289,28 @@ int readsettingsfromeeprom() {
   if (EEPROM.read(0) == MAGIC) {
     EEPROM.get(ADR_DATA, vars1);
     if (vars1.magic == MAGIC) {
-      Serial.print("saved kp:"); Serial.print(vars1.kp);
-      Serial.print(" ki:"); Serial.print(vars1.ki);
-      Serial.print(" kd:"); Serial.print(vars1.kd);
-      Serial.print(" b:"); Serial.print(vars1.bo);
+      Serial.print("saved kp:");
+      Serial.print(vars1.kp);
+      Serial.print(" ki:");
+      Serial.print(vars1.ki);
+      Serial.print(" kd:");
+      Serial.print(vars1.kd);
+      Serial.print(" b:");
+      Serial.print(vars1.bo);
       Serial.println();
-      Serial.print("powermax:"); Serial.print(vars1.powermax);
-      Serial.print(" slow:"); Serial.print(vars1.powerslow);
-      Serial.print(" putar:"); Serial.print(vars1.powerputar);
+      Serial.print("powermax:");
+      Serial.print(vars1.powermax);
+      Serial.print(" slow:");
+      Serial.print(vars1.powerslow);
+      Serial.print(" putar:");
+      Serial.print(vars1.powerputar);
       Serial.println();
       depan.setKP(vars1.kp);
       depan.setKI(vars1.ki);
       depan.setKD(vars1.kd);
       boostfactor = vars1.bo;
       return 1;
-    }
-    else {
+    } else {
       Serial.println("Tidak ada data tersimpan.");
     }
   }
@@ -287,30 +334,24 @@ void prosesdata(Stream &S) {
   char c;
   int j;
   switch (state) {
-    case AWAL: //terima magic byte awal
+    case AWAL:  //terima magic byte awal
       c = S.read();
       Serial.println(c);
       if (c == MAGIC) {
         state = XDATA;
         ledcWrite(PWMC1, 0);
-      }
-      else if (c == 'p') { //set kp
+      } else if (c == 'p') {  //set kp
         state = SETKP;
-      }
-      else if (c == 'i') {
+      } else if (c == 'i') {
         state = SETKI;
-      }
-      else if (c == 'd') {
+      } else if (c == 'd') {
         state = SETKD;
-      }
-      else if (c == 'f') {
+      } else if (c == 'f') {
         state = SETF;
-      }
-      else if (c == 's') { //save kp ki kd ke eeprom
+      } else if (c == 's') {  //save kp ki kd ke eeprom
         savesettingstoeeprom();
         Serial.println("pid constants saved.");
-      }
-      else if (c == 'r') { //baca kp ki kd dll
+      } else if (c == 'r') {  //baca kp ki kd dll
         S.print(depan.getKP());
         S.print(',');
         S.print(depan.getKI());
@@ -319,51 +360,40 @@ void prosesdata(Stream &S) {
         S.print(',');
         S.print(boostfactor);
         S.println();
-      }
-      else if (c == 'P') { //power max, power slow, power putar
+      } else if (c == 'P') {  //power max, power slow, power putar
         state = PMAX;
-      }
-      else if (c == 'R') { //putar kanan 90
+      } else if (c == 'R') {  //putar kanan 90
         putardelta(M_PI_2);
         noswerve();
-      }
-      else if (c == 'L') { //putar kiri 90
+      } else if (c == 'L') {  //putar kiri 90
         putardelta(-M_PI_2);
         noswerve();
-      }
-      else if (c == '0') {
+      } else if (c == '0') {
         motorenable = 0;
         stopmovement();
         ledoff();
-      }
-      else if (c == '1') {
+      } else if (c == '1') {
         motorenable = 1;
         ledon();
-      }
-      else if (c == 'W') { //perintah WSAD
+      } else if (c == 'W') {  //perintah WSAD
         maju(vars1.powermax);
         putar(0);
         noswerve();
-      }
-      else if (c == 'w') { //maju pelan
+      } else if (c == 'w') {  //maju pelan
         maju(vars1.powerslow);
         putar(0);
         noswerve();
-      }
-      else if (c == 'S') { //mundur pelan
+      } else if (c == 'S') {  //mundur pelan
         maju(-vars1.powerslow);
         putar(0);
-      }
-      else if (c == 'X') { //mundur full power
+      } else if (c == 'X') {  //mundur full power
         maju(-vars1.powermax);
         putar(0);
-      }
-      else if (c == 'A') { //putar kiri
+      } else if (c == 'A') {  //putar kiri
         maju(0);
         putar(-vars1.powerputar);
         noswerve();
-      }
-      else if (c == 'D') { //putar kanan
+      } else if (c == 'D') {  //putar kanan
         maju(0);
         putar(vars1.powerputar);
         noswerve();
@@ -394,9 +424,9 @@ void prosesdata(Stream &S) {
       S.print("t:");
       S.print((int)(targetarah * 180 / M_PI));
       S.print(" a:");
-      S.print((int)(arahhadap * 180 / M_PI));
-      S.print(" sd:");
-      S.println((int)sdiff);
+      S.println((int)(arahhadap * 180 / M_PI));
+      //S.print(" sd:");
+      //S.println((int)sdiff);
       /*
         Serial.print("target:");
         Serial.print(targetarah);
@@ -409,27 +439,27 @@ void prosesdata(Stream &S) {
       //gerakkan arm
       s_angkat.write(sdata);
       break;
-    case SETKP: //set KP
+    case SETKP:  //set KP
       f = S.parseFloat();
       depan.setKP(f);
       state = AWAL;
       break;
-    case SETKI: //set KI
+    case SETKI:  //set KI
       f = S.parseFloat();
       depan.setKI(f);
       state = AWAL;
       break;
-    case SETKD: //set KD
+    case SETKD:  //set KD
       f = S.parseFloat();
       depan.setKD(f);
       state = AWAL;
       break;
-    case SETF: //set rotate compensation factor
+    case SETF:  //set rotate compensation factor
       f = S.parseFloat();
       rotatecompensationfactor = f;
       state = AWAL;
       break;
-    case PMAX: //set power max, power  slow, power putar
+    case PMAX:  //set power max, power  slow, power putar
       j = S.read();
       if (j > 0 && j < 100) vars1.powermax = j;
       state = PLOW;
@@ -443,7 +473,7 @@ void prosesdata(Stream &S) {
       j = S.read();
       if (j > 0 && j < 100) vars1.powerputar = j;
       state = AWAL;
-  } //tutup switch(state)
+  }  //tutup switch(state)
 }
 //===============awal program==================
 
@@ -452,8 +482,9 @@ void setup() {
   Serial.begin(115200);
   EEPROM.begin(512);
   Wire.begin(21, 22, 400000);
+  //Wire.begin();
   btserial.begin(BLUETOOTHNAME);
-  //btserial.connect(remoteaddress, ESP_SPP_SEC_NONE);
+  // btserial.connect(remoteaddress,ESP_SPP_SEC_NONE);
   pinMode(2, OUTPUT);
   ledon();
   readsettingsfromeeprom();
@@ -462,7 +493,8 @@ void setup() {
   s_grip.attach(S_GRIP_PIN);
   skiri.attach(SKIRI_PIN);
   skanan.attach(SKANAN_PIN);
-  s_angkat.write(90);
+  s_angkat.write(SANGKAT_DOWN);
+  s_grip.write(SGRIP_HOLD);
   skiriangle = 90 + SKIRIOFFSET;
   skananangle = 90 + SKANANOFFSET;
   skiri.write(skiriangle);
@@ -496,11 +528,11 @@ void setup() {
   ledcWrite(PWMC3, 256);
   ledcWrite(PWMC4, 256);
   //=========gyro======================
+  Serial.println("testing gyro...");
   if (mpu.testConnection()) {
     Serial.println("MPU6050 koneksi OK");
     //tone(12, 500); delay(100); noTone(12); delay(400);
-  }
-  else {
+  } else {
     Serial.println("MPU connection failed");
     ledcWrite(PWMC1, 255);
     ledcWrite(PWMC2, 255);
@@ -520,14 +552,14 @@ void setup() {
     adagyro = 1;
   }
   //==============motor output=================
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, M1A); //hubungkan unit PWM 0, fungsi yang mana, ke pin mana
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, M1B); //kiri
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, M1A);  //hubungkan unit PWM 0, fungsi yang mana, ke pin mana
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, M1B);  //kiri
   mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1A, M2A);
-  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1B, M2B); //kanan
+  mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1B, M2B);  //kanan
   conf.frequency = 1000;
   conf.cmpr_a = 0;
   conf.cmpr_b = 0;
-  conf.duty_mode = MCPWM_DUTY_MODE_0; //active high
+  conf.duty_mode = MCPWM_DUTY_MODE_0;  //active high
   conf.counter_mode = MCPWM_UP_COUNTER;
   mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &conf);
   mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_1, &conf);
@@ -540,12 +572,28 @@ void setup() {
 
 #ifdef TESTMOTORS
   Serial.println("Testing motors...");
-  powerkiri = 80; powerkanan = 80;  updatemotor();
+  powerkiri = 80;
+  powerkanan = 80;
+  updatemotor();
   delay(100);
-  powerkiri = -80; powerkanan = -80;  updatemotor();
+  powerkiri = -80;
+  powerkanan = -80;
+  updatemotor();
   delay(100);
-  powerkiri = 0; powerkanan = 0;  updatemotor();
+  powerkiri = 0;
+  powerkanan = 0;
+  updatemotor();
   delay(100);
+#endif
+#ifdef TESTSERVO
+  armup();
+  delay(200);
+  armdown();
+  delay(200);
+  gripopen();
+  delay(200);
+  griphold();
+  delay(200);
 #endif
   vars1.powermax = 100;
   vars1.powerslow = 40;
@@ -563,36 +611,30 @@ void loop() {
       mpu.dmpGetQuaternion(&q, fifobuffer);
       mpu.dmpGetGravity(&grav, &q);
       mpu.dmpGetYawPitchRoll(ypr, &q, &grav);
-      arahhadap = ypr[0]; //dalam radian
+      arahhadap = ypr[0];  //dalam radian
       //Serial.println(arahhadap);
       //kalau dekat batas +- pi:
       if (targetarah > M_PI_2) {
         if (arahhadap < 0) arahhadap += 2 * M_PI;
-      }
-      else if (targetarah < -M_PI_2) {
+      } else if (targetarah < -M_PI_2) {
         if (arahhadap > 0) arahhadap -= 2 * M_PI;
       }
       float deltat = t - tlastcalc;
-      powerputar = -depan.calc(arahhadap, targetarah, deltat); //positif = putar kanan
+      powerputar = -depan.calc(arahhadap, targetarah, deltat);  //positif = putar kanan
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, hasil PID calc = negatif, output harus positif
       float faktorputar = (90 - fabs(swerveangle - 90)) / 90.;
       putar(powerputar * faktorputar);
       //koreksi ini bisa mengubah sudut swerve kiri dan kanan
       //kalau arah hadap < target (kurang ke kanan), hasil PID calc negatif, tambahkan sudut swerve kanan, kurangi sudut swerve kiri
-#ifdef SINGLESWERVE
-      sdiff = sign(x2data - 128) * powerputar * (1. - faktorputar); //maksimal 10 derajat koreksi, tapi semakin dekat ke lurus depan (lihat dari x2data), perkecil koreksi
-      if (sdiff > 20)sdiff = 20;
+      sdiff = sign(x2data - 128) * powerputar * (1. - faktorputar);  //maksimal 10 derajat koreksi, tapi semakin dekat ke lurus depan (lihat dari x2data), perkecil koreksi
+      if (sdiff > 20) sdiff = 20;
       else if (sdiff < -20) sdiff = -20;
-#else
-      sdiff = 0;
-#endif
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
-  }
-  else { //tidak ada gyro! apa yang harus diperbuat?
+  } else {  //tidak ada gyro! apa yang harus diperbuat?
     float deltat = t - tlastcalc;
-    if (deltat > 50) { //update 20 kali perdetik
+    if (deltat > 50) {  //update 20 kali perdetik
 
       /*
         if(targetarah>arahhadap){ //putarkanan
@@ -623,8 +665,8 @@ void loop() {
     while (btserial.available()) {
       tlastcommand = t;
       prosesdata(btserial);
-    }//tutup btserial.available
-  }//tutup if btserial.hasclient
+    }  //tutup btserial.available
+  }    //tutup if btserial.hasclient
 
   if (t - tlastcommand > 120) {
     stopmovement();
@@ -632,8 +674,8 @@ void loop() {
   //update motor di setiap loop
   if (motorenable) {
     //putar positif ke kanan, power kiri tambahkan, power kanan kurangi
-    powerkiri = m1f.update(powermaju + deltamotor);
-    powerkanan = m2f.update(powermaju - deltamotor);
+    powerkiri = m1limiter.update(powermaju + deltamotor);
+    powerkanan = m2limiter.update(powermaju - deltamotor);
     if (powerkiri > 100) powerkiri = 100;
     else if (powerkiri < -100) powerkiri = -100;
     if (powerkanan > 100) powerkanan = 100;

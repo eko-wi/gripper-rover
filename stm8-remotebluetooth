@@ -1,0 +1,495 @@
+/*
+   STM8 remote bluetooth
+   tombol: 20, terdiri dari 5 column x 4 row
+   C7,C6,C5,C4,C3 = column 1-5
+   D4,D3,D2,D1 = row 1-4
+   A3 = LED active high
+   D4,D5 = SPI ke tampilan OLED(?)
+   Pengiriman data setiap interval 50ms
+   paket data:
+   1 = magic byte 0xbd
+   2 = x1
+   3 = y1
+   4 = x2
+   5 = y2 (servo)
+   6 = bstate (untuk ke transporter robot
+*/
+#include <HardwareSerial.h>
+#define nop() __asm__("nop")
+#define COL1 0x80
+#define COL2 0x40
+#define COL3 0x20
+#define COL4 0x10
+#define COL5 0x08
+#define ROW1 0x10
+#define ROW2 0x08
+#define ROW3 0x04
+#define ROW4 0x02
+#define LEDBIT 0x08
+uint8_t colbits[5] = { COL1, COL2, COL3, COL4, COL5 };
+uint8_t rowbits[4] = { ROW1, ROW2, ROW3, ROW4 };
+long interval = 30;
+uint8_t magicbyte = 0xbd;
+uint8_t x1data = 128, y1data = 128, x2data = 128, sdata = 90, bstate = 0, y1target = 128, x2target = 128;
+uint8_t yaccel = 10, ydecel = 50, xaccel = 20, xdecel = 50;
+long t = 0, tlast = 0, tlastpress = 0;
+uint8_t keystate[20];
+uint8_t powermax = 127, powerslow = 24, powerputar = 90, powerswerve1 = 20, deltaarm = 5;
+uint8_t armpos1 = 0, armpos2 = 60, armpos3 = 180;
+uint8_t lastkey = 0, gripstate = 0, printascii = 0;
+//fungsi-fungsi tombol
+#define FWD1 10
+#define FWD2 15
+#define REV1 6
+#define REV2 1
+#define LEFT1 5
+#define LEFT2 0
+#define RIGHT1 11
+#define RIGHT2 16
+#define TURNLEFT1 8
+#define TURNLEFT2 3
+#define TURNRIGHT1 14
+#define TURNRIGHT2 19
+#define GRIP 9
+#define ARMUP 18
+#define ARMDOWN 13
+#define ARMPOS1 4
+#define ARMPOS2 12
+#define ARMPOS3 17
+#define FUN1 2
+#define FUN2 7
+
+void pinModeOutput(GPIO_TypeDef *port, uint8_t bitmask) {
+  //CR1-CR2 = 11
+  port->DDR |= bitmask;
+  port->CR1 |= bitmask;
+  port->CR2 |= bitmask;
+}
+void pinModeOutput_OD(GPIO_TypeDef *port, uint8_t bitmask) {
+  //CR1-CR2 = 01
+  port->DDR |= bitmask;
+  port->CR1 &= ~bitmask;
+  port->CR2 |= bitmask;
+}
+void pinModeInput(GPIO_TypeDef *port, uint8_t bitmask) {
+  //CR1-CR2 = 00
+  port->DDR &= ~bitmask;
+  port->CR1 &= ~bitmask;
+  port->CR2 &= ~bitmask;
+}
+void pinModeInput_Pullup(GPIO_TypeDef *port, uint8_t bitmask) {
+  //CR1-CR2 = 10
+  port->DDR &= ~bitmask;
+  port->CR1 |= bitmask;
+  port->CR2 &= ~bitmask;
+}
+
+
+void ledon() {
+  GPIOA->ODR |= LEDBIT;
+}
+void ledoff() {
+  GPIOA->ODR &= ~LEDBIT;
+}
+void led2on() {
+  GPIOB->ODR &= ~(1 << 5);
+}
+void led2off() {
+  GPIOB->ODR |= (1 << 5);
+}
+uint8_t sbuf[16];
+void Serial_print(uint8_t x) {
+  uint8_t i = 0;
+  //pisahkan jadi digit-digitnya
+  if (x == 0) {
+    Serial_write('0');
+    return;
+  }
+  while (x) {
+    sbuf[i] = (x % 10) + '0';
+    i++;
+    x /= 10;
+  }
+  //kirim dengan urutan terbalik
+  while (i) {
+    i--;
+    Serial_write(sbuf[i]);
+  }
+}
+void readkeys() {
+  for (uint8_t i = 0; i < 5; i++) {
+    pinModeOutput(GPIOC, colbits[i]);
+    GPIOC->ODR &= ~colbits[i];  //aktif low
+    //delayMicroseconds(500);
+    nop();nop();nop();nop();
+    //delay(1);
+    /*
+      Serial_write('c');
+      Serial_write(i+'0');
+      Serial_write(':');
+    */
+    uint8_t inbits = GPIOD->IDR;
+    //Serial_print(inbits);
+    for (uint8_t j = 0; j < 4; j++) {
+      uint8_t k = j * 5 + i;
+      /*
+        Serial_write('r');
+        Serial_write(j+'0');
+        Serial_write(':');
+        Serial_print(inbits & rowbits[j]);
+        Serial_write(' ');
+      */
+      if ((inbits & rowbits[j]) == 0) {
+        /*
+          Serial_write('<');
+          Serial_print(k);
+          Serial_write('>');
+        */
+        keystate[k] = 1;
+        //led2on();
+        //delay(1);
+      } else keystate[k] = 0;
+      //delay(1);
+    }
+    //Serial_write('\n');
+    GPIOC->ODR |= colbits[i];
+    pinModeInput(GPIOC, colbits[i]);
+    //delayMicroseconds(500);
+    nop();nop();nop();nop();
+    //led2off();
+  }
+}
+//combo moves
+void griphold() {
+  gripstate = 1;
+  bstate |= (1 << 5);
+}
+void gripopen() {
+  gripstate = 0;
+  bstate |= (1 << 6);
+}
+enum moves_t { GRIPHOLD,
+               GRIPOPEN,
+               ARMPOS };
+uint8_t moves1[] = { GRIPHOLD, ARMPOS, GRIPOPEN, ARMPOS };
+uint8_t times1[] = { 200, 200, 100, 10};
+uint8_t values1[] = { 0, 60, 0, 0 };
+uint8_t moves2[] = { GRIPHOLD, ARMPOS};
+uint8_t times2[] = { 200, 10};
+uint8_t values2[] = { 0, 180};
+typedef struct combo_t {
+  uint8_t *moves, *times, *values;
+  uint8_t n, i;
+  long timer;  //awal gerakan ke-i
+  uint8_t running;
+} combo_t;
+//isi struct:   moves, times, values, jumlah_gerakan, index_gerakan, timer, running
+combo_t cb1 = { moves1, times1, values1, 4, 0, 0, 0 };
+combo_t cb2 = { moves2, times2, values2, 2, 0, 0, 0 };
+void combo_exec(combo_t *cb) {
+  switch (cb->moves[cb->i]) {
+    case GRIPHOLD:
+      griphold();
+      break;
+    case GRIPOPEN:
+      gripopen();
+      break;
+    case ARMPOS:
+      sdata = cb->values[cb->i];
+  }
+}
+void combo_start(combo_t *cb) {
+  cb->timer = t;
+  cb->i = 0;
+  cb->running = 1;
+  combo_exec(cb);
+}
+void combo_watch(combo_t *cb) {
+  if (cb->running) {
+    if (t - (cb->timer) > cb->times[cb->i]) {
+      cb->i += 1;
+      cb->timer = t;
+      if (cb->i < cb->n) {  //masih ada gerakan berikutnya
+        combo_exec(cb);
+      } else {
+        cb->running = 0;
+      }
+    }
+  }
+}
+void setup() {
+  pinModeOutput(GPIOA, LEDBIT);
+  pinModeOutput(GPIOB, 1 << 5);
+  pinModeOutput(GPIOC, COL1 | COL2 | COL3 | COL4 | COL5);
+  pinModeInput_Pullup(GPIOD, ROW1 | ROW2 | ROW3 | ROW4);
+  //set pin column high
+  GPIOC->ODR = COL1 | COL2 | COL3 | COL4 | COL5;
+  Serial_begin(9600);
+  ledon();
+  led2on();
+  delay(200);
+  ledoff();
+  led2off();
+  delay(200);
+  ledon();
+  led2on();
+  delay(200);
+  ledoff();
+  led2off();
+  /*
+    Serial_write('T');
+    Serial_write('e');
+    Serial_write('s');
+    Serial_write('t');
+    Serial_write('\n');
+  */
+  readkeys();
+  //kalau tombol grip direkan saat reset, pengiriman data dalam string ascii
+  if (keystate[GRIP] && keystate[FUN1]) {
+    printascii = 1;
+  } else if (keystate[GRIP]) {
+    printascii = 2;
+  }
+}
+
+void loop() {
+  uint8_t nkeys = 0;
+  t = millis();
+  if (t - tlast >= interval) {
+    tlast = t;
+    ledon();
+    combo_watch(&cb1);
+    combo_watch(&cb2);
+    readkeys();
+    for (uint8_t i = 0; i < 20; i++) {
+      if (keystate[i] > 0) {
+        nkeys++;
+        led2on();
+        //Serial_print(i);
+        //Serial_write(' ');
+      }
+    }
+    /*
+    if (nkeys) {
+      //Serial_write('\n');
+      if (t - tlastpress > 1000) {
+        Serial_write('1');
+      }
+      tlastpress = t;
+    }
+    */
+    //hitung nilai kontrol x, y
+    x2target = 128;
+    y1target = 128;
+    x1data = 128;
+    //swerve
+    if (keystate[LEFT2]) {
+      x2target = 0;
+    } else if (keystate[LEFT1]) {
+      x2target = 128 - powerswerve1;
+    } else if (keystate[RIGHT2]) {
+      x2target = 255;
+    } else if (keystate[RIGHT1]) {
+      x2target = 128 + powerswerve1;
+    }
+    //maju mundur
+    if (keystate[FWD2]) {
+      y1target = powermax + 128;
+    } else if (keystate[FWD1]) {
+      y1target = powerslow + 128;
+    } else if (keystate[REV2]) {
+      y1target = 128 - powermax;
+    } else if (keystate[REV1]) {
+      y1target = 128 - powerslow;
+    }
+    //putar arah
+    if (keystate[TURNLEFT1]) {
+      x1data = 128 - powerputar;
+    } else if (keystate[TURNRIGHT1]) {
+      x1data = 128 + powerputar;
+    }
+    //tekan tombol arm up, arm dowm, dan grip = motor disable
+    if (keystate[ARMUP] && keystate[ARMDOWN] && keystate[GRIP]) {
+     if ((lastkey & 0x20) == 0) {
+        Serial_write('0');
+        lastkey |= 0x20;
+      }
+    }
+    else if (keystate[ARMUP] && keystate[ARMDOWN]) {
+      //kedua tombol ditekan = motor enable
+      if ((lastkey & 0x20) == 0) {
+        Serial_write('1');
+        lastkey |= 0x20;
+      }
+    } else {
+      lastkey &= ~0x20;
+    }
+
+      //servo naik turun (y2 atau s)
+    if (keystate[ARMUP]) {
+      if (sdata < (180 - deltaarm)) {
+        sdata += deltaarm;
+      } else {
+        sdata = 180;
+      }
+    } else if (keystate[ARMDOWN]) {
+      if (sdata > deltaarm) {
+        sdata -= deltaarm;
+      } else {
+        sdata = 0;
+      }
+    }
+    //preset arm
+    if (keystate[ARMPOS1]) {
+      sdata = armpos1;
+    } else if (keystate[ARMPOS2]) {
+      sdata = armpos2;
+    } else if (keystate[ARMPOS3]) {
+      sdata = armpos3;
+    }
+    //grip toggle
+    if (keystate[GRIP]) {
+      if ((lastkey & 0x01) == 0) {
+        lastkey |= 0x01;
+        if (gripstate == 0) {
+          griphold();
+          //bstate &= ~ (1 << 6);
+        } else {
+          gripopen();
+          //bstate &= ~(1 << 5);
+        }
+      }
+    } else {
+      lastkey &= ~0x01;
+    }
+    if (keystate[FUN1]) {
+      if ((lastkey & 0x02) == 0) {
+        lastkey |= 0x02;
+        bstate |= 0x01;
+        combo_start(&cb1);
+      }
+    } else {
+      lastkey &= ~0x02;
+    }
+    if (keystate[FUN2]) {
+      if ((lastkey & 0x04) == 0) {
+        lastkey |= 0x04;
+        bstate |= 0x02;
+        combo_start(&cb2);      }
+    } else {
+      lastkey &= ~0x04;
+    }
+    //left2 dan right2 untuk putar 90 derajat
+    if (keystate[TURNLEFT2]) {
+      if ((lastkey & 0x08) == 0) {
+        lastkey |= 0x08;
+        Serial_write('L');
+      }
+    } else {
+      lastkey &= ~0x08;
+    }
+    if (keystate[TURNRIGHT2]) {
+      if ((lastkey & 0x10) == 0) {
+        lastkey |= 0x10;
+        Serial_write('R');
+      }
+    } else {
+      lastkey &= ~(0x10);
+    }
+
+    //hitung akselerasi untuk x dan y
+    if (y1target >= 128) {      //maju
+      if (y1target > y1data) {  //akselerasi maju
+        if (y1data < (y1target - yaccel)) {
+          y1data += yaccel;
+        } else {
+          y1data = y1target;
+        }
+      } else {  //deselerasi maju
+        if (y1data > (y1target + ydecel)) {
+          y1data -= ydecel;
+        } else {
+          y1data = y1target;
+        }
+      }
+    } else {                    //mundur
+      if (y1target < y1data) {  //akselerasi mundur
+        if (y1data > (y1target + yaccel)) {
+          y1data -= yaccel;
+        } else {
+          y1data = y1target;
+        }
+      } else {  //deselerasi mundur
+        if (y1data < (y1target - ydecel)) {
+          y1data += ydecel;
+        } else {
+          y1data = y1target;
+        }
+      }
+    }
+
+    if (x2target >= 128) {      //maju
+      if (x2target > x2data) {  //akselerasi maju
+        if (x2data < (x2target - xaccel)) {
+          x2data += xaccel;
+        } else {
+          x2data = x2target;
+        }
+      } else {  //deselerasi maju
+        if (x2data > (x2target + xdecel)) {
+          x2data -= xdecel;
+        } else {
+          x2data = x2target;
+        }
+      }
+    } else {                    //mundur
+      if (x2target < x2data) {  //akselerasi mundur
+        if (x2data > (x2target + xaccel)) {
+          x2data -= xaccel;
+        } else {
+          x2data = x2target;
+        }
+      } else {  //deselerasi mundur
+        if (x2data < (x2target - xdecel)) {
+          x2data += xdecel;
+        } else {
+          x2data = x2target;
+        }
+      }
+    }
+
+    //kirim paket data
+    if (printascii == 0) {
+      Serial_write(magicbyte);
+      Serial_write(x1data);
+      Serial_write(y1data);
+      Serial_write(x2data);
+      Serial_write(sdata);
+      Serial_write(bstate);
+    } else if (printascii == 1) {
+      Serial_print(x1data);
+      Serial_write(',');
+      Serial_print(y1data);
+      Serial_write(',');
+      Serial_print(x2data);
+      Serial_write(',');
+      Serial_print(sdata);
+      Serial_write(',');
+      Serial_print(bstate);
+      Serial_write('\n');
+    } else {
+      for (uint8_t i = 0; i < 20; i++) {
+        if (keystate[i]) {
+          Serial_print(i + 1);
+          Serial_write(' ');
+        }
+      }
+      Serial_write('\n');
+    }
+    //clear bit fun1 dan fun2
+    //bstate &= ~ (0x01 | 0x02);
+    bstate = 0;
+    ledoff();
+    led2off();
+  }
+}

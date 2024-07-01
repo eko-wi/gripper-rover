@@ -67,7 +67,7 @@
 #define ADR_KD 18
 #define ADR_RF 24
 //bluetooth:
-#define BLUETOOTHNAME "TOPScience-Transport3"
+#define BLUETOOTHNAME "TOPScience-Boxinator"
 //untuk mengaktifkan gerakan test motor di awal, uncomment baris berikut ini
 //#define TESTMOTORS
 #define TESTSERVO
@@ -127,7 +127,7 @@ enum states {
   PPUTAR
 } state;
 
-PIDController depan(70, 1.5, 15000, 80, 50);  //set motor value dalam persen, maks 100
+PIDController depan(70, 1.5, 15000, 50, 50);  //set motor value dalam persen, maks 100
 Smoothfilter putarsmooth(2);
 RateLimiter armpos(SERVORATE, &t);
 inline void ledon() {
@@ -330,6 +330,8 @@ void prosesdata(Stream &S) {
         ledoff();
       } else if (c == '1') {
         motorenable = 1;
+        targetarah=arahhadap;
+        depan.reset();
         ledon();
       } else if (c == 'W') {  //perintah WSAD
         maju(vars1.powermax);
@@ -591,7 +593,8 @@ void loop() {
       targetarah = 0;
       arahhadap = 0;
       //kalau arah hadap < target (kurang ke kanan), selisih = negatif, output harus positif
-      putar(-powerputar);
+      //putar(-powerputar);
+      putar(128-xdata);
       ledcWrite(PWMC3, 255 - fabs(powerputar * 2.55));
       tlastcalc = t;
     }
